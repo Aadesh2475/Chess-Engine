@@ -1,0 +1,36 @@
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local model and training artifacts
+data/
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# Streamlit and editor state
+.streamlit/secrets.toml
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
