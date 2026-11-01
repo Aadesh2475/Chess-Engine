@@ -58,7 +58,11 @@ def main() -> None:
         f"({games_skipped:,} invalid or unusable records skipped)."
     )
     print(f"Saved continuation model to {args.output}.")
-    print("This model predicts legal dataset continuations; Stockfish evaluates best moves.")
+    print(
+        "The model predicts frequent legal dataset continuations; "
+        "it does not evaluate positions or guarantee the best move."
+    )
+    print("Stockfish can optionally provide position evaluation and best-move analysis.")
 
 
 if __name__ == "__main__":

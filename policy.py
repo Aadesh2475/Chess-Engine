@@ -87,6 +87,20 @@ def continuation_candidates(
     return "", []
 
 
+def suggestion_candidates(
+    policy: dict[str, Any],
+    history: list[str],
+    board: chess.Board,
+    limit: int = 5,
+) -> tuple[str, list[tuple[str, int, float]], bool]:
+    context, candidates = continuation_candidates(policy, history, board, limit)
+    if candidates or not history:
+        return context, candidates, False
+
+    context, candidates = continuation_candidates(policy, [], board, limit)
+    return context, candidates, bool(candidates)
+
+
 def predict_next_move(
     policy: dict[str, Any], history: list[str], board: chess.Board
 ) -> tuple[str, int, float] | None:

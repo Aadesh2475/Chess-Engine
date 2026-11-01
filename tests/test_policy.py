@@ -9,6 +9,7 @@ from policy import (
     new_policy,
     parse_san_sequence,
     predict_next_move,
+    suggestion_candidates,
 )
 
 
@@ -54,6 +55,35 @@ class PolicyTests(unittest.TestCase):
         board.push_san("d4")
 
         self.assertIsNone(predict_next_move(policy, ["d4"], board))
+
+    def test_suggestion_uses_global_legal_move_when_context_is_unknown(self) -> None:
+        policy = new_policy()
+        policy["counts"][""] = {"e4": 100, "Nf6": 3}
+        board = chess.Board()
+        board.push_san("d4")
+
+        context, candidates, used_fallback = suggestion_candidates(
+            policy, ["d4"], board
+        )
+
+        self.assertEqual(context, "")
+        self.assertEqual(candidates, [("Nf6", 3, 3 / 103)])
+        self.assertTrue(used_fallback)
+
+    def test_suggestion_prefers_matching_context_over_global_fallback(self) -> None:
+        policy = new_policy()
+        policy["counts"][""] = {"Nf6": 100}
+        policy["counts"]["e4"] = {"e5": 3}
+        board = chess.Board()
+        board.push_san("e4")
+
+        context, candidates, used_fallback = suggestion_candidates(
+            policy, ["e4"], board
+        )
+
+        self.assertEqual(context, "e4")
+        self.assertEqual(candidates, [("e5", 3, 1.0)])
+        self.assertFalse(used_fallback)
 
     def test_invalid_san_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

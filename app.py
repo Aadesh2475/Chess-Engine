@@ -15,7 +15,7 @@ from chess_game import (
     play_move,
     resolve_engine_path,
 )
-from policy import continuation_candidates
+from policy import continuation_candidates, suggestion_candidates
 
 MODEL_PATH = Path(__file__).resolve().parent / "data" / "move_policy.json"
 CHESS_ASSET_DIRECTORY = Path(__file__).resolve().parent / "assets" / "chess"
@@ -63,7 +63,8 @@ def new_game() -> None:
     st.session_state["game_board"] = chess.Board()
     st.session_state["game_moves"] = []
     st.session_state["game_selected_square"] = None
-    st.session_state["game_engine_error"] = None
+    st.session_state["game_opponent_error"] = None
+    st.session_state["game_model_fallback"] = False
     st.session_state["game_last_san"] = None
     st.session_state["game_mode"] = st.session_state["game_mode_setting"]
     st.session_state["game_player_color"] = (
@@ -75,8 +76,9 @@ def new_game() -> None:
 
 @st.cache_data(show_spinner=False)
 def load_chess_images(
-    asset_directory: str, _modified_times: tuple[int, int]
+    asset_directory: str, modified_times: tuple[int, int]
 ) -> tuple[str, str]:
+    del modified_times
     directory = Path(asset_directory)
     board_image = base64.b64encode(
         (directory / "board-texture.png").read_bytes()
@@ -92,12 +94,17 @@ def load_chess_images(
 
 def undo_turn() -> None:
     board = st.session_state["game_board"]
-    move_count = 2 if st.session_state["game_mode"] == "Stockfish" else 1
+    move_count = (
+        2
+        if st.session_state["game_mode"] in {"Stockfish", "Trained model"}
+        else 1
+    )
     for _ in range(min(move_count, len(board.move_stack))):
         board.pop()
         st.session_state["game_moves"].pop()
     st.session_state["game_selected_square"] = None
-    st.session_state["game_engine_error"] = None
+    st.session_state["game_opponent_error"] = None
+    st.session_state["game_model_fallback"] = False
     st.session_state["game_last_san"] = None
 
 
@@ -106,7 +113,7 @@ def on_square_click(square_name: str) -> None:
     square = chess.parse_square(square_name)
     selected = st.session_state["game_selected_square"]
     if (
-        st.session_state["game_mode"] == "Stockfish"
+        st.session_state["game_mode"] in {"Stockfish", "Trained model"}
         and board.turn != st.session_state["game_player_color"]
     ):
         return
@@ -125,7 +132,8 @@ def on_square_click(square_name: str) -> None:
         st.session_state["game_moves"].append(san)
         st.session_state["game_last_san"] = san
         st.session_state["game_selected_square"] = None
-        st.session_state["game_engine_error"] = None
+        st.session_state["game_opponent_error"] = None
+        st.session_state["game_model_fallback"] = False
         return
 
     piece = board.piece_at(square)
@@ -454,23 +462,89 @@ def render_engine_analysis(board: chess.Board, engine_path: str) -> None:
         st.code(line["line"], language=None)
 
 
+def render_move_suggestions(
+    board: chess.Board,
+    history: list[str],
+    move_model: dict | None,
+    allow_play: bool,
+) -> None:
+    if move_model is None:
+        st.info("Train the local move model to get learned move suggestions.")
+        return
+
+    _, candidates, used_fallback = suggestion_candidates(
+        move_model, history, board, limit=3
+    )
+    if not candidates:
+        st.info("The model has no legal learned move for this position.")
+        return
+
+    san, occurrences, share = candidates[0]
+    st.markdown(f"**Top learned suggestion: {san}**")
+    st.caption(f"{occurrences:,} examples · {share:.1%} of matching samples")
+    if used_fallback:
+        st.caption(
+            "No recent-move context matched; this uses the most frequent legal "
+            "move across the training games."
+        )
+    for candidate, count, candidate_share in candidates[1:]:
+        st.markdown(
+            f"- `{candidate}` · {count:,} examples · {candidate_share:.1%}"
+        )
+    st.caption("A learned frequency suggestion is not a guarantee of the best move.")
+
+    if allow_play and st.button(
+        "Play top learned suggestion", key="play_model_suggestion"
+    ):
+        move = board.parse_san(san)
+        san = board.san(move)
+        board.push(move)
+        st.session_state["game_moves"].append(san)
+        st.session_state["game_last_san"] = san
+        st.session_state["game_selected_square"] = None
+        st.session_state["game_opponent_error"] = None
+        st.session_state["game_model_fallback"] = False
+        st.rerun()
+
+
+if MODEL_PATH.exists():
+    try:
+        move_model = load_move_model(
+            str(MODEL_PATH), MODEL_PATH.stat().st_mtime_ns
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        move_model = None
+        st.error(f"Could not load the local move model: {error}")
+else:
+    move_model = None
+
 if "game_board" not in st.session_state:
-    st.session_state["game_mode_setting"] = "Stockfish"
+    st.session_state["game_mode_setting"] = (
+        "Trained model" if move_model is not None else "Stockfish"
+    )
     st.session_state["game_player_color_setting"] = "White"
     st.session_state["game_skill_level"] = 10
     st.session_state["game_promotion_choice"] = "Queen"
     new_game()
 
 st.title("♞ Chess Studio")
-st.caption("Play a complete game against Stockfish or another person.")
+st.caption("Play against the trained move model, Stockfish, or another person.")
 
 with st.sidebar:
     st.subheader("New game")
+    opponent_options = ["Stockfish", "Two players"]
+    if move_model is not None:
+        opponent_options.insert(0, "Trained model")
+    if st.session_state.get("game_mode_setting") not in opponent_options:
+        st.session_state["game_mode_setting"] = opponent_options[0]
     st.selectbox(
         "Opponent",
-        ["Stockfish", "Two players"],
+        opponent_options,
         key="game_mode_setting",
-        help="Stockfish is a chess engine. The dataset model is not used as an opponent.",
+        help=(
+            "The trained model chooses common legal moves from game history. "
+            "Stockfish is an optional position-evaluating engine."
+        ),
     )
     st.selectbox(
         "Play as",
@@ -478,7 +552,8 @@ with st.sidebar:
         key="game_player_color_setting",
         disabled=st.session_state["game_mode_setting"] == "Two players",
     )
-    st.slider("Stockfish strength", 1, 20, key="game_skill_level")
+    if st.session_state["game_mode_setting"] == "Stockfish":
+        st.slider("Stockfish strength", 1, 20, key="game_skill_level")
     st.selectbox(
         "Pawn promotion",
         list(PROMOTION_PIECES),
@@ -495,8 +570,13 @@ with st.sidebar:
         except FileNotFoundError:
             st.warning(
                 "Stockfish was not found. Install it and set its path, or select "
-                "Two players."
+                "another opponent."
             )
+    if move_model is None and not MODEL_PATH.exists():
+        st.info(
+            "The trained model is not installed. Run `python train_model.py` "
+            "to create it."
+        )
     st.button(
         "Start new game",
         on_click=new_game,
@@ -510,6 +590,7 @@ with st.sidebar:
 board = st.session_state["game_board"]
 mode = st.session_state["game_mode"]
 player_color = st.session_state["game_player_color"]
+stockfish_path = stockfish_path.strip()
 status, detail = game_status(board)
 board_column, info_column = st.columns([1.7, 0.8], gap="large")
 
@@ -523,29 +604,37 @@ with board_column:
     )
     draw_board(
         board,
-        flipped=mode == "Stockfish" and player_color == chess.BLACK,
+        flipped=mode in {"Stockfish", "Trained model"}
+        and player_color == chess.BLACK,
     )
     if st.session_state["game_last_san"]:
         st.caption(f"Last move: **{st.session_state['game_last_san']}**")
+    if st.session_state.get("game_model_fallback"):
+        st.caption(
+            "The trained opponent used a popular legal fallback because no "
+            "recent-move context matched."
+        )
+    white_name = (
+        "Player"
+        if mode in {"Stockfish", "Trained model"} and player_color == chess.WHITE
+        else "Stockfish"
+        if mode == "Stockfish"
+        else "Trained model"
+        if mode == "Trained model"
+        else "Player 1"
+    )
+    black_name = (
+        "Player"
+        if mode in {"Stockfish", "Trained model"} and player_color == chess.BLACK
+        else "Stockfish"
+        if mode == "Stockfish"
+        else "Trained model"
+        if mode == "Trained model"
+        else "Player 2"
+    )
     st.download_button(
         "Download game as PGN",
-        data=create_pgn(
-            board,
-            (
-                "Player"
-                if mode == "Stockfish" and player_color == chess.WHITE
-                else "Stockfish"
-                if mode == "Stockfish"
-                else "Player 1"
-            ),
-            (
-                "Player"
-                if mode == "Stockfish" and player_color == chess.BLACK
-                else "Stockfish"
-                if mode == "Stockfish"
-                else "Player 2"
-            ),
-        ),
+        data=create_pgn(board, white_name, black_name),
         file_name="chess-game.pgn",
         mime="application/x-chess-pgn",
         use_container_width=True,
@@ -556,10 +645,21 @@ with info_column:
     if mode == "Stockfish":
         side = "White" if player_color == chess.WHITE else "Black"
         st.markdown(f"Playing **{side}** against Stockfish")
+    elif mode == "Trained model":
+        side = "White" if player_color == chess.WHITE else "Black"
+        st.markdown(f"Playing **{side}** against the trained move model")
     else:
         st.markdown("Local two-player game")
     st.caption(f"Move {board.fullmove_number}")
     st.caption("Click a piece, then click one of its highlighted legal squares.")
+
+    st.subheader("Smart suggestion")
+    render_move_suggestions(
+        board,
+        st.session_state["game_moves"],
+        move_model,
+        allow_play=mode == "Two players" or board.turn == player_color,
+    )
 
     if board.is_game_over(claim_draw=False):
         if board.is_checkmate():
@@ -591,25 +691,19 @@ with info_column:
             st.markdown(neural_network_concept_svg(), unsafe_allow_html=True)
         if st.button("Visualize learned move patterns", key="visualize_move_model"):
             st.session_state["show_move_model"] = True
-        if st.session_state.get("show_move_model") and MODEL_PATH.exists():
-            try:
-                move_model = load_move_model(
-                    str(MODEL_PATH), MODEL_PATH.stat().st_mtime_ns
-                )
-                context, candidates = continuation_candidates(
-                    move_model, sans, board, limit=5
-                )
-                st.markdown(
-                    model_flow_svg(
-                        int(move_model.get("training", {}).get("games_used", 0)),
-                        context,
-                        candidates,
-                    ),
-                    unsafe_allow_html=True,
-                )
-            except (OSError, json.JSONDecodeError, ValueError) as error:
-                st.error(f"Could not load the move model visualization: {error}")
-        elif not MODEL_PATH.exists():
+        if st.session_state.get("show_move_model") and move_model is not None:
+            context, candidates = continuation_candidates(
+                move_model, sans, board, limit=5
+            )
+            st.markdown(
+                model_flow_svg(
+                    int(move_model.get("training", {}).get("games_used", 0)),
+                    context,
+                    candidates,
+                ),
+                unsafe_allow_html=True,
+            )
+        elif move_model is None:
             st.info(
                 "Train the continuation model to show game-derived move frequencies."
             )
@@ -623,27 +717,50 @@ with info_column:
         )
         render_engine_analysis(board, stockfish_path.strip())
 
-    engine_error = st.session_state.get("game_engine_error")
-    if engine_error:
-        st.error(f"Stockfish could not make a move: {engine_error}")
-        st.caption("Check its executable path in the sidebar, then start a new game.")
+    opponent_error = st.session_state.get("game_opponent_error")
+    if opponent_error:
+        opponent_name = "Stockfish" if mode == "Stockfish" else "trained model"
+        st.error(
+            f"{opponent_name.capitalize()} could not make a move: {opponent_error}"
+        )
 
 if (
-    mode == "Stockfish"
+    mode in {"Stockfish", "Trained model"}
     and not board.is_game_over(claim_draw=False)
     and board.turn != player_color
-    and not st.session_state.get("game_engine_error")
+    and not st.session_state.get("game_opponent_error")
 ):
-    with st.spinner("Stockfish is thinking…"):
+    with st.spinner(
+        "Stockfish is thinking…"
+        if mode == "Stockfish"
+        else "The trained model is choosing a move…"
+    ):
         try:
-            san = play_engine_move(
-                stockfish_path.strip(),
-                board,
-                st.session_state["game_skill_level"],
-            )
+            if mode == "Stockfish":
+                san = play_engine_move(
+                    stockfish_path,
+                    board,
+                    st.session_state["game_skill_level"],
+                )
+                used_fallback = False
+            else:
+                if move_model is None:
+                    raise ValueError("The trained move model is unavailable.")
+                _, candidates, used_fallback = suggestion_candidates(
+                    move_model, st.session_state["game_moves"], board, limit=1
+                )
+                if not candidates:
+                    raise ValueError(
+                        "The model has no legal learned move for this position."
+                    )
+                move = board.parse_san(candidates[0][0])
+                san = board.san(move)
+                board.push(move)
             st.session_state["game_moves"].append(san)
             st.session_state["game_last_san"] = san
             st.session_state["game_selected_square"] = None
+            st.session_state["game_model_fallback"] = used_fallback
+            st.session_state["game_opponent_error"] = None
             st.rerun()
         except (
             FileNotFoundError,
@@ -651,5 +768,5 @@ if (
             chess.engine.EngineError,
             ValueError,
         ) as error:
-            st.session_state["game_engine_error"] = str(error)
+            st.session_state["game_opponent_error"] = str(error)
             st.rerun()

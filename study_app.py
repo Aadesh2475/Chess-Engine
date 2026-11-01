@@ -12,7 +12,7 @@ import chess.pgn
 import streamlit as st
 
 from chess_game import create_pgn, play_engine_move, play_move
-from policy import add_game_to_policy, game_moves, new_policy, predict_next_move
+from policy import add_game_to_policy, game_moves, new_policy, suggestion_candidates
 
 ROOT = Path(__file__).resolve().parent
 POLICY_PATH = ROOT / "data" / "move_policy.json"
@@ -362,7 +362,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-selected_ply = st.slider("Move", min_value=0, max_value=len(moves), value=len(moves))
+selected_ply = st.slider(
+    "Move",
+    min_value=0,
+    max_value=len(moves),
+    value=max(0, len(moves) - 1),
+)
 board = game.board()
 history: list[str] = []
 for san in moves[:selected_ply]:
@@ -376,21 +381,42 @@ with board_column:
     st.caption(f"Position after {selected_ply} half-moves · FEN: `{board.fen()}`")
 
 with insight_column:
-    st.subheader("Learned continuation")
-    suggestion = predict_next_move(policy, history, board)
-    if suggestion is None:
-        st.info("No legal continuation for this position was found in the local model.")
+    st.subheader("Smart move suggestion")
+    _, suggestions, used_fallback = suggestion_candidates(
+        policy, history, board, limit=3
+    )
+    if not suggestions:
+        st.info("No legal learned move was found for this position.")
     else:
-        san, occurrences, share = suggestion
+        san, occurrences, share = suggestions[0]
         st.markdown(
-            f'<div class="study-card"><h3>{html.escape(san)}</h3>'
-            f'<p class="muted">Most frequent legal dataset continuation for this '
+            f'<div class="study-card"><h3>Top learned move: '
+            f'{html.escape(san)}</h3>'
+            f'<p class="muted">Most frequent legal dataset move for this '
             f"context · {occurrences:,} examples · {share:.1%} of matching samples</p>"
             "</div>",
             unsafe_allow_html=True,
         )
+        for candidate, count, candidate_share in suggestions[1:]:
+            st.markdown(
+                f"- `{candidate}` · {count:,} examples · {candidate_share:.1%}"
+            )
+        if selected_ply < len(moves):
+            played_move = moves[selected_ply]
+            if played_move == san:
+                st.success(f"The game played the top learned move: {played_move}.")
+            else:
+                st.caption(
+                    f"The game played **{played_move}** here; the top learned "
+                    f"suggestion was **{san}**."
+                )
+        if used_fallback:
+            st.caption(
+                "No recent-move context matched; suggestions use the most "
+                "frequent legal moves across the training games."
+            )
         st.caption(
-            "This frequency is not a calibrated win probability or a claim that the move is best."
+            "These are learned move frequencies, not engine-ranked best moves."
         )
 
     st.subheader("Engine evaluation")
