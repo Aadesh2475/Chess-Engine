@@ -43,6 +43,9 @@ Click a piece, then a highlighted legal square. Choose your side and engine
 strength in the sidebar; settings apply to the next game. Completed games can
 be downloaded as PGN.
 
+The interactive board uses the PNG board texture and piece sprites in
+`assets/chess/`.
+
 The game panel includes an optional illustration of a neural-network
 architecture (concept only; it is not used by the app), a data-backed view of
 the actual move-frequency model, and Stockfish position analysis with

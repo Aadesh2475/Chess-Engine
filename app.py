@@ -1,3 +1,4 @@
+import base64
 import html
 import json
 import os
@@ -17,6 +18,7 @@ from chess_game import (
 from policy import continuation_candidates
 
 MODEL_PATH = Path(__file__).resolve().parent / "data" / "move_policy.json"
+CHESS_ASSET_DIRECTORY = Path(__file__).resolve().parent / "assets" / "chess"
 
 PIECE_GLYPHS = {
     "K": "♔",
@@ -32,6 +34,7 @@ PIECE_GLYPHS = {
     "n": "♞",
     "p": "♟",
 }
+PIECE_SPRITE_COLUMNS = {"k": 0, "q": 1, "r": 2, "b": 3, "n": 4, "p": 5}
 PROMOTION_PIECES = {
     "Queen": "q",
     "Rook": "r",
@@ -67,6 +70,23 @@ def new_game() -> None:
         chess.WHITE
         if st.session_state["game_player_color_setting"] == "White"
         else chess.BLACK
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_chess_images(
+    asset_directory: str, _modified_times: tuple[int, int]
+) -> tuple[str, str]:
+    directory = Path(asset_directory)
+    board_image = base64.b64encode(
+        (directory / "board-texture.png").read_bytes()
+    ).decode("ascii")
+    piece_sprites = base64.b64encode(
+        (directory / "piece-sprites.png").read_bytes()
+    ).decode("ascii")
+    return (
+        f"data:image/png;base64,{board_image}",
+        f"data:image/png;base64,{piece_sprites}",
     )
 
 
@@ -116,23 +136,65 @@ def on_square_click(square_name: str) -> None:
 def draw_board(board: chess.Board, flipped: bool) -> None:
     files = range(7, -1, -1) if flipped else range(8)
     ranks = range(8) if flipped else range(7, -1, -1)
+    board_image_path = CHESS_ASSET_DIRECTORY / "board-texture.png"
+    piece_sprite_path = CHESS_ASSET_DIRECTORY / "piece-sprites.png"
+    board_image, piece_sprites = load_chess_images(
+        str(CHESS_ASSET_DIRECTORY),
+        (
+            board_image_path.stat().st_mtime_ns,
+            piece_sprite_path.stat().st_mtime_ns,
+        ),
+    )
     selected = st.session_state["game_selected_square"]
     legal_targets = {
         move.to_square
         for move in board.legal_moves
         if selected is not None and move.from_square == selected
     }
-    rules = []
-    for rank in ranks:
-        for file in files:
+    rules = [
+        ":root {"
+        f"--chess-board-image: url('{board_image}');"
+        f"--chess-piece-sprites: url('{piece_sprites}');"
+        "}"
+    ]
+    for visual_row, rank in enumerate(ranks):
+        for visual_column, file in enumerate(files):
             square = chess.square(file, rank)
             square_name = chess.square_name(square)
-            square_color = "#769656" if (file + rank) % 2 else "#eeeed2"
+            piece = board.piece_at(square)
+            background_images = []
+            background_sizes = []
+            background_positions = []
+            if piece is not None:
+                sprite_column = PIECE_SPRITE_COLUMNS[piece.symbol().lower()]
+                sprite_row = 0 if piece.color == chess.WHITE else 1
+                background_images.append("var(--chess-piece-sprites)")
+                background_sizes.append("600% 200%")
+                background_positions.append(
+                    f"{sprite_column * 20}% {sprite_row * 100}%"
+                )
             if square == selected:
-                square_color = "#f6f669"
+                background_images.append(
+                    "linear-gradient(rgba(246, 246, 105, .38), "
+                    "rgba(246, 246, 105, .38))"
+                )
+                background_sizes.append("100% 100%")
+                background_positions.append("0 0")
+            board_position = (
+                f"{visual_column * 100 / 7:.4f}% "
+                f"{visual_row * 100 / 7:.4f}%"
+            )
+            background_images.append("var(--chess-board-image)")
+            background_sizes.append("800% 800%")
+            background_positions.append(board_position)
             rules.append(
                 f".st-key-game-square-{square_name} button "
-                f"{{ background: {square_color} !important; border: 0 !important; "
+                "{ background-color: #6b432a !important; "
+                f"background-image: {', '.join(background_images)} !important; "
+                f"background-size: {', '.join(background_sizes)} !important; "
+                f"background-position: {', '.join(background_positions)} !important; "
+                "background-repeat: no-repeat !important; "
+                "border: 0 !important; position: relative; overflow: hidden; "
                 "border-radius: 0 !important; min-height: 0 !important; "
                 "height: auto !important; aspect-ratio: 1 / 1; padding: 0 !important; "
                 "font-size: clamp(24px, 5vw, 48px) !important; "
@@ -140,12 +202,11 @@ def draw_board(board: chess.Board, flipped: bool) -> None:
                 f".st-key-game-square-{square_name} button:hover "
                 "{ filter: brightness(1.12); }"
             )
-            piece = board.piece_at(square)
-            if piece is not None and piece.color == chess.WHITE:
+            if piece is not None:
                 rules.append(
                     f".st-key-game-square-{square_name} button "
-                    "{ color: #fff !important; "
-                    "text-shadow: 0 1px 3px #354339, 0 0 2px #354339; }"
+                    "{ color: transparent !important; text-shadow: none !important; "
+                    "font-size: 0 !important; }"
                 )
             if square in legal_targets and square != selected:
                 rules.append(
