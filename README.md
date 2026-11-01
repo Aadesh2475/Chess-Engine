@@ -1,4 +1,4 @@
-# Chess Studio
+# Chess-Engine Studio
 
 A local chess game with a clickable board, legal move validation, Stockfish
 opponent, adjustable engine strength, PGN export, and a local two-player mode.
