@@ -1,5 +1,6 @@
 # Chess-Engine Studio
 
+
 A local chess game with a clickable board, legal move validation, a trained
 move-model opponent, optional Stockfish analysis, PGN export, and a local
 two-player mode. It does not capture screens or connect to chess.com.
